@@ -19,7 +19,7 @@ on:
       aws_role_arn:
         description: IAM role assumed through GitHub OIDC (not a secret)
         type: string
-        default: "arn:aws:iam::ACCOUNT_ID:role/github-vercel-deploy"
+        default: "arn:aws:iam::291075416889:role/github-vercel-deploy"
       aws_region:
         description: AWS region of the SSM parameter
         type: string
