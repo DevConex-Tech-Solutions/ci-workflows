@@ -1,0 +1,17 @@
+# Copy this file to .github/workflows/deploy.yml in any DevConex Next.js site repo.
+# No secrets to set. The shared workflow reads the Vercel token from AWS on its own.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    uses: DevConex-Tech-Solutions/ci-workflows/.github/workflows/vercel-deploy.yml@v1

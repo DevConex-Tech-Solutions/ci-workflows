@@ -1,0 +1,139 @@
+# Reusable workflow: deploys the CALLING repository to Vercel.
+#
+# - Vercel project name = the calling repo's name (created on first deploy, reused after).
+# - push to main -> production deploy; pull requests -> preview deploy.
+# - No GitHub secrets or variables are used. The Vercel token is read at run time from
+#   AWS SSM Parameter Store through a short-lived GitHub OIDC login (see aws/setup.sh).
+#
+# EDIT ONCE: aws/setup.sh rewrites the aws_role_arn and aws_region defaults below.
+# Until the ACCOUNT_ID placeholder is replaced, the workflow warns and skips the deploy.
+name: Vercel Deploy (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      vercel_scope:
+        description: Vercel account or team slug that owns the projects (not a secret)
+        type: string
+        default: "devconex-tech-solutions"
+      aws_role_arn:
+        description: IAM role assumed through GitHub OIDC (not a secret)
+        type: string
+        default: "arn:aws:iam::ACCOUNT_ID:role/github-vercel-deploy"
+      aws_region:
+        description: AWS region of the SSM parameter
+        type: string
+        default: "us-east-1"
+      ssm_token_parameter:
+        description: SSM SecureString parameter that holds the Vercel access token
+        type: string
+        default: "/devconex/vercel/token"
+      node_version:
+        description: Node.js version used for the Vercel CLI and the build
+        type: string
+        default: "22"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      id-token: write
+      contents: read
+    concurrency:
+      group: vercel-deploy-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+    env:
+      VERCEL_SCOPE: ${{ inputs.vercel_scope }}
+      AWS_ROLE_ARN: ${{ inputs.aws_role_arn }}
+      SSM_PARAM: ${{ inputs.ssm_token_parameter }}
+      IS_FORK_PR: ${{ github.event.pull_request.head.repo.fork }}
+    steps:
+      - name: Check configuration
+        id: cfg
+        run: |
+          if [ "$IS_FORK_PR" = "true" ]; then
+            echo "::warning::Fork pull request: no OIDC token is available. Skipping deploy."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          elif [[ "$AWS_ROLE_ARN" == *ACCOUNT_ID* ]]; then
+            echo "::warning::aws_role_arn still contains the ACCOUNT_ID placeholder. Run aws/setup.sh in the ci-workflows repo. Skipping deploy."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.cfg.outputs.ready == 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        if: steps.cfg.outputs.ready == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Assume AWS role via OIDC
+        if: steps.cfg.outputs.ready == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws_role_arn }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Read Vercel token from SSM
+        if: steps.cfg.outputs.ready == 'true'
+        run: |
+          TOKEN="$(aws ssm get-parameter --name "$SSM_PARAM" --with-decryption --query Parameter.Value --output text)"
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "None" ]; then
+            echo "::error::SSM parameter $SSM_PARAM is empty or missing."
+            exit 1
+          fi
+          echo "::add-mask::$TOKEN"
+          echo "VERCEL_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      - name: Install Vercel CLI
+        if: steps.cfg.outputs.ready == 'true'
+        run: npm install --global vercel@latest
+
+      - name: Resolve project name and target
+        if: steps.cfg.outputs.ready == 'true'
+        run: |
+          NAME="${GITHUB_REPOSITORY#*/}"
+          NAME="$(printf '%s' "$NAME" | tr '[:upper:]' '[:lower:]')"
+          echo "PROJECT_NAME=$NAME" >> "$GITHUB_ENV"
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            echo "VERCEL_ENV=production" >> "$GITHUB_ENV"
+            echo "PROD_FLAG=--prod" >> "$GITHUB_ENV"
+          else
+            echo "VERCEL_ENV=preview" >> "$GITHUB_ENV"
+            echo "PROD_FLAG=" >> "$GITHUB_ENV"
+          fi
+
+      - name: Link project (create if missing)
+        if: steps.cfg.outputs.ready == 'true'
+        run: |
+          if ! vercel link --yes --project "$PROJECT_NAME" --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN"; then
+            echo "Link failed; creating project '$PROJECT_NAME' and retrying."
+            vercel project add "$PROJECT_NAME" --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN"
+            vercel link --yes --project "$PROJECT_NAME" --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN"
+          fi
+
+      - name: Pull Vercel settings and env vars
+        if: steps.cfg.outputs.ready == 'true'
+        run: vercel pull --yes --environment="$VERCEL_ENV" --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN"
+
+      - name: Build
+        if: steps.cfg.outputs.ready == 'true'
+        run: vercel build $PROD_FLAG --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN"
+
+      - name: Deploy
+        if: steps.cfg.outputs.ready == 'true'
+        run: |
+          URL="$(vercel deploy --prebuilt $PROD_FLAG --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN")"
+          echo "Deployed ($VERCEL_ENV): $URL"
+          {
+            echo "### Vercel deploy ($VERCEL_ENV)"
+            echo
+            echo "Project: $PROJECT_NAME"
+            echo
+            echo "$URL"
+          } >> "$GITHUB_STEP_SUMMARY"
