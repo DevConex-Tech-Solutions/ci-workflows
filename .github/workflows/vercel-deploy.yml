@@ -32,6 +32,10 @@ on:
         description: Node.js version used for the Vercel CLI and the build
         type: string
         default: "22"
+      target:
+        description: "auto = production on main and preview elsewhere; or force production or preview"
+        type: string
+        default: "auto"
 
 jobs:
   deploy:
@@ -48,6 +52,7 @@ jobs:
       AWS_ROLE_ARN: ${{ inputs.aws_role_arn }}
       SSM_PARAM: ${{ inputs.ssm_token_parameter }}
       IS_FORK_PR: ${{ github.event.pull_request.head.repo.fork }}
+      TARGET_INPUT: ${{ inputs.target }}
     steps:
       - name: Check configuration
         id: cfg
@@ -100,13 +105,28 @@ jobs:
           NAME="${GITHUB_REPOSITORY#*/}"
           NAME="$(printf '%s' "$NAME" | tr '[:upper:]' '[:lower:]')"
           echo "PROJECT_NAME=$NAME" >> "$GITHUB_ENV"
-          if [ "$GITHUB_REF" = "refs/heads/main" ]; then
-            echo "VERCEL_ENV=production" >> "$GITHUB_ENV"
-            echo "PROD_FLAG=--prod" >> "$GITHUB_ENV"
-          else
-            echo "VERCEL_ENV=preview" >> "$GITHUB_ENV"
-            echo "PROD_FLAG=" >> "$GITHUB_ENV"
+          TARGET="${TARGET_INPUT:-auto}"
+          if [ "$TARGET" = "auto" ]; then
+            if [ "$GITHUB_REF" = "refs/heads/main" ]; then TARGET=production; else TARGET=preview; fi
           fi
+          case "$TARGET" in
+            production)
+              if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+                echo "::error::Production deploys are only allowed from main (ref: $GITHUB_REF)."
+                exit 1
+              fi
+              echo "VERCEL_ENV=production" >> "$GITHUB_ENV"
+              echo "PROD_FLAG=--prod" >> "$GITHUB_ENV"
+              ;;
+            preview)
+              echo "VERCEL_ENV=preview" >> "$GITHUB_ENV"
+              echo "PROD_FLAG=" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "::error::Unknown target '$TARGET' (use auto, production or preview)."
+              exit 1
+              ;;
+          esac
 
       - name: Link project (create if missing)
         if: steps.cfg.outputs.ready == 'true'
