@@ -41,6 +41,10 @@ on:
         description: "Vercel project name. Empty = the calling repo's name. Set it for monorepos with several projects"
         type: string
         default: ""
+      remote_build:
+        description: "true = Vercel builds the app with its own env (needed when build-time vars are 'sensitive' type, which vercel pull cannot read). false = build on the runner"
+        type: boolean
+        default: false
     outputs:
       url:
         description: URL of the deployment that was created
@@ -65,6 +69,7 @@ jobs:
       IS_FORK_PR: ${{ github.event.pull_request.head.repo.fork }}
       TARGET_INPUT: ${{ inputs.target }}
       PROJECT_NAME_INPUT: ${{ inputs.project_name }}
+      REMOTE_BUILD: ${{ inputs.remote_build }}
     steps:
       - name: Check configuration
         id: cfg
@@ -150,18 +155,22 @@ jobs:
           fi
 
       - name: Pull Vercel settings and env vars
-        if: steps.cfg.outputs.ready == 'true'
+        if: steps.cfg.outputs.ready == 'true' && inputs.remote_build != true
         run: vercel pull --yes --environment="$VERCEL_ENV" --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN"
 
       - name: Build
-        if: steps.cfg.outputs.ready == 'true'
+        if: steps.cfg.outputs.ready == 'true' && inputs.remote_build != true
         run: vercel build $PROD_FLAG --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN"
 
       - name: Deploy
         id: deploy
         if: steps.cfg.outputs.ready == 'true'
         run: |
-          URL="$(vercel deploy --prebuilt $PROD_FLAG --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN")"
+          if [ "$REMOTE_BUILD" = "true" ]; then
+            URL="$(vercel deploy $PROD_FLAG --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN")"
+          else
+            URL="$(vercel deploy --prebuilt $PROD_FLAG --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN")"
+          fi
           echo "Deployed ($VERCEL_ENV): $URL"
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           {
