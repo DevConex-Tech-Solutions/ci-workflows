@@ -1,6 +1,7 @@
 # Reusable workflow: deploys the CALLING repository to Vercel.
 #
-# - Vercel project name = the calling repo's name (created on first deploy, reused after).
+# - Vercel project name = the calling repo's name by default (created on first deploy, reused after).
+#   Monorepos: pass project_name to deploy a specific project (one call per app).
 # - push to main -> production deploy; pull requests -> preview deploy.
 # - No GitHub secrets or variables are used. The Vercel token is read at run time from
 #   AWS SSM Parameter Store through a short-lived GitHub OIDC login (see aws/setup.sh).
@@ -36,16 +37,26 @@ on:
         description: "auto = production on main and preview elsewhere; or force production or preview"
         type: string
         default: "auto"
+      project_name:
+        description: "Vercel project name. Empty = the calling repo's name. Set it for monorepos with several projects"
+        type: string
+        default: ""
+    outputs:
+      url:
+        description: URL of the deployment that was created
+        value: ${{ jobs.deploy.outputs.url }}
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      url: ${{ steps.deploy.outputs.url }}
     permissions:
       id-token: write
       contents: read
     concurrency:
-      group: vercel-deploy-${{ github.repository }}-${{ github.ref }}
+      group: vercel-deploy-${{ github.repository }}-${{ inputs.project_name || 'repo' }}-${{ github.ref }}
       cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
     env:
       VERCEL_SCOPE: ${{ inputs.vercel_scope }}
@@ -53,6 +64,7 @@ jobs:
       SSM_PARAM: ${{ inputs.ssm_token_parameter }}
       IS_FORK_PR: ${{ github.event.pull_request.head.repo.fork }}
       TARGET_INPUT: ${{ inputs.target }}
+      PROJECT_NAME_INPUT: ${{ inputs.project_name }}
     steps:
       - name: Check configuration
         id: cfg
@@ -102,7 +114,7 @@ jobs:
       - name: Resolve project name and target
         if: steps.cfg.outputs.ready == 'true'
         run: |
-          NAME="${GITHUB_REPOSITORY#*/}"
+          NAME="${PROJECT_NAME_INPUT:-${GITHUB_REPOSITORY#*/}}"
           NAME="$(printf '%s' "$NAME" | tr '[:upper:]' '[:lower:]')"
           echo "PROJECT_NAME=$NAME" >> "$GITHUB_ENV"
           TARGET="${TARGET_INPUT:-auto}"
@@ -146,10 +158,12 @@ jobs:
         run: vercel build $PROD_FLAG --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN"
 
       - name: Deploy
+        id: deploy
         if: steps.cfg.outputs.ready == 'true'
         run: |
           URL="$(vercel deploy --prebuilt $PROD_FLAG --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN")"
           echo "Deployed ($VERCEL_ENV): $URL"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
           {
             echo "### Vercel deploy ($VERCEL_ENV)"
             echo
