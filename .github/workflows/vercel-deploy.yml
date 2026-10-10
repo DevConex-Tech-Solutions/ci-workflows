@@ -41,6 +41,14 @@ on:
         description: "Vercel project name. Empty = the calling repo's name. Set it for monorepos with several projects"
         type: string
         default: ""
+      deploy_author_email:
+        description: "Git author email stamped on the checked-out commit before deploying. Vercel (Hobby) rejects CLI deploys whose commit author is not a team member, so this is set to the account that owns the Vercel token. Empty = leave the commit untouched"
+        type: string
+        default: "91756775+spencergoldberg1@users.noreply.github.com"
+      deploy_author_name:
+        description: "Git author name stamped together with deploy_author_email"
+        type: string
+        default: "Spencer Goldberg"
       remote_build:
         description: "true = Vercel builds the app with its own env (needed when build-time vars are 'sensitive' type, which vercel pull cannot read). false = build on the runner"
         type: boolean
@@ -70,6 +78,8 @@ jobs:
       TARGET_INPUT: ${{ inputs.target }}
       PROJECT_NAME_INPUT: ${{ inputs.project_name }}
       REMOTE_BUILD: ${{ inputs.remote_build }}
+      DEPLOY_AUTHOR_EMAIL: ${{ inputs.deploy_author_email }}
+      DEPLOY_AUTHOR_NAME: ${{ inputs.deploy_author_name }}
     steps:
       - name: Check configuration
         id: cfg
@@ -145,6 +155,17 @@ jobs:
               ;;
           esac
 
+      - name: Set deploy author
+        if: steps.cfg.outputs.ready == 'true'
+        run: |
+          # Only the local checkout is rewritten (never pushed). The real actor is kept in deploy metadata.
+          if [ -n "$DEPLOY_AUTHOR_EMAIL" ]; then
+            git config user.name "${DEPLOY_AUTHOR_NAME:-deploy}"
+            git config user.email "$DEPLOY_AUTHOR_EMAIL"
+            git commit --amend --reset-author --no-edit --allow-empty >/dev/null
+            echo "Deploy author set to $DEPLOY_AUTHOR_EMAIL (triggered by $GITHUB_ACTOR)"
+          fi
+
       - name: Link project (create if missing)
         if: steps.cfg.outputs.ready == 'true'
         run: |
@@ -167,9 +188,9 @@ jobs:
         if: steps.cfg.outputs.ready == 'true'
         run: |
           if [ "$REMOTE_BUILD" = "true" ]; then
-            URL="$(vercel deploy $PROD_FLAG --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN")"
+            URL="$(vercel deploy $PROD_FLAG --meta actor="$GITHUB_ACTOR" --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN")"
           else
-            URL="$(vercel deploy --prebuilt $PROD_FLAG --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN")"
+            URL="$(vercel deploy --prebuilt $PROD_FLAG --meta actor="$GITHUB_ACTOR" --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN")"
           fi
           echo "Deployed ($VERCEL_ENV): $URL"
           echo "url=$URL" >> "$GITHUB_OUTPUT"
